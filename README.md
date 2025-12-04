@@ -1,4 +1,7 @@
-# DATAPLAY
+![logo](https://github.com/user-attachments/assets/a4ead842-5050-4658-93a6-b1f5d148d154)
+
+---
+
 ### TEAM 주토피아
 <table>
   <tr align="center">
@@ -15,6 +18,8 @@
   </tr>
 </table>
 
+---
+
 ### 스택
 <p>
 <img src="https://img.shields.io/badge/mariaDB-003545?style=for-the-badge&logo=mariaDB&logoColor=white">
@@ -23,11 +28,31 @@
 <img src="https://img.shields.io/badge/discord-5865F2?style=for-the-badge&logo=discord&logoColor=white">
 </p>
 
+---
+
 ### 프로젝트 개요
 
+### 주요 기능
 
+---
 
-WBS(일정, 역할)
-요구사항정의서
-ERD설계서 및 DDL문
-테스트(DML 및 프로시저)
+### WBS
+
+---
+
+### 요구사항정의서
+
+---
+
+### ERD
+<img width="2790" height="1972" alt="test" src="https://github.com/user-attachments/assets/bdb16b32-a70f-4074-b8df-40a120e1ab83" />
+
+---
+
+### 쿼리
+
+#### DDL
+
+#### DML
+
+#### 프로시저
