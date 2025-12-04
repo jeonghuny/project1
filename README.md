@@ -93,11 +93,55 @@ Songs 테이블의 is_title 컬럼으로 앨범 내 타이틀곡 식별 강조.
 ---
 
 ### WBS
-
+<details>
+  <summary><b>기획</b></summary>
+사진
+  </details>
+  <details>
+  <summary><b>설계</b></summary>
+사진
+  </details>
+<details>
+  <summary><b>구축</b></summary>
+사진
+  </details>
+  <details>
+  <summary><b>테스트</b></summary>
+사진
+  </details>
+  
 ---
 
 ### 요구사항정의서
-
+  <details>
+  <summary><b>1. 회원관리</b></summary>
+사진
+  </details>
+  <details>
+  <summary><b>2. 음악서비스</b></summary>
+사진
+  </details>
+    <details>
+  <summary><b>3. 앨범관리</b></summary>
+사진
+  </details>
+    <details>
+  <summary><b>4. 아티스트관리</b></summary>
+사진
+  </details>
+    <details>
+  <summary><b>5. 플레이리스트관리</b></summary>
+사진
+  </details>
+    <details>
+  <summary><b>6. 차트/추천</b></summary>
+사진
+  </details>
+    <details>
+  <summary><b>7. 구독/결제</b></summary>
+사진
+  </details>
+  
 ---
 
 ### ERD
@@ -106,9 +150,15 @@ Songs 테이블의 is_title 컬럼으로 앨범 내 타이틀곡 식별 강조.
 ---
 
 ### 쿼리
-
-#### DDL
-
-#### DML
-
-#### 프로시저
+<details>
+  <summary><b>DDL</b></summary>
+내용ㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇ
+  </details>
+<details>
+  <summary><b>DML</b></summary>
+내용ㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇ
+  </details>
+  <details>
+  <summary><b>프로시저</b></summary>
+내용ㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇ
+  </details>
