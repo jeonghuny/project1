@@ -642,14 +642,14 @@ END//
 DELIMITER ;
 
 --9)좋아요 취소하기
-DELIMITER $$
+DELIMITER //
 CREATE PROCEDURE sp_unlike_song(
 IN p_user_id BIGINT,
 IN p_song_id BIGINT
 )
 BEGIN
 UPDATE userSongStat SET is_like = FALSE WHERE user_id = p_user_id AND song_id = p_song_id;
-END$$
+END//
 DELIMITER ;
 
 -- 10) 곡 상세 정보
@@ -844,7 +844,7 @@ SET o_playlist_id = LAST_INSERT_ID();
 END//
 DELIMITER ;
 
--- 16-1) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
+-- 16) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
 DELIMITER //
 CREATE PROCEDURE sp_add_song_to_playlist(
 IN p_playlist_id BIGINT,
@@ -866,7 +866,7 @@ VALUES (p_playlist_id, p_song_id, p_display_order, NOW());
 END//
 DELIMITER ;
 
--- 16-2) 플레이리스트에서 곡 제거
+-- 17) 플레이리스트에서 곡 제거
 DELIMITER //
 CREATE PROCEDURE sp_remove_song_from_playlist(
 IN p_playlist_id BIGINT,
@@ -942,7 +942,83 @@ BEGIN
 END//
 DELIMITER ;
 
--- 19) 플레이리스트 수정
+-- 19) 플레이리스트 수정(곡 순서, 플레이리스트 이름, 플레이리스트 공개여부)
+DELIMITER //
+CREATE PROCEDURE sp_update_playlist_and_order(
+    IN p_playlist_id BIGINT,
+    IN p_user_id BIGINT,         -- [추가] 본인 확인용
+    IN p_new_title VARCHAR(100), -- [추가] NULL이면 변경 안 함
+    IN p_is_public BOOLEAN,      -- [추가] NULL이면 변경 안 함
+    IN p_song_id BIGINT,         -- NULL이면 순서 변경 안 함
+    IN p_new_order INT           -- NULL이면 순서 변경 안 함
+)
+sp_update: BEGIN
+    DECLARE v_old_order INT;
+    DECLARE v_owner_cnt INT;
+    -- 에러 핸들러
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error updating playlist';
+    END;
+    START TRANSACTION;
+    -- 0. 본인 확인 (권한 체크)
+    SELECT COUNT(*) INTO v_owner_cnt 
+    FROM playlists 
+    WHERE playlist_id = p_playlist_id AND user_id = p_user_id;
+    IF v_owner_cnt = 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Permission denied or playlist not found';
+    END IF;
+    -- ----------------------------------------------------
+    -- [기능 1] 플레이리스트 정보 수정 (제목 / 공개여부)
+    -- ----------------------------------------------------
+    IF p_new_title IS NOT NULL OR p_is_public IS NOT NULL THEN
+        UPDATE playlists
+        SET 
+            title = COALESCE(p_new_title, title),   -- 값이 있으면 새 값, NULL이면 기존 값 유지
+            is_public = COALESCE(p_is_public, is_public)
+        WHERE playlist_id = p_playlist_id;
+    END IF;
+    -- ----------------------------------------------------
+    -- [기능 2] 곡 순서 변경 (song_id가 있을 때만 실행)
+    -- ----------------------------------------------------
+    IF p_song_id IS NOT NULL AND p_new_order IS NOT NULL THEN
+        -- 현재 순서 조회 (FOR UPDATE로 잠금)
+        SELECT display_order INTO v_old_order 
+        FROM playlist_Song 
+        WHERE playlist_id = p_playlist_id AND song_id = p_song_id 
+        FOR UPDATE;
+        -- 곡이 없으면 에러
+        IF v_old_order IS NULL THEN
+            ROLLBACK;
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Song not in playlist';
+        END IF;
+        -- 순서가 다를 때만 로직 실행
+        IF p_new_order != v_old_order THEN
+            IF p_new_order < v_old_order THEN
+                -- 위로 이동 (사이의 곡들을 +1)
+                UPDATE playlist_Song 
+                SET display_order = display_order + 1
+                WHERE playlist_id = p_playlist_id 
+                  AND display_order >= p_new_order 
+                  AND display_order < v_old_order;
+            ELSE
+                -- 아래로 이동 (사이의 곡들을 -1)
+                UPDATE playlist_Song 
+                SET display_order = display_order - 1
+                WHERE playlist_id = p_playlist_id 
+                  AND display_order <= p_new_order 
+                  AND display_order > v_old_order;
+            END IF;
+            -- 주인공 이동
+            UPDATE playlist_Song 
+            SET display_order = p_new_order 
+            WHERE playlist_id = p_playlist_id AND song_id = p_song_id;
+        END IF;
+    END IF;
+    COMMIT;
+END //
 
 -- 20) 인기차트 조회(주간/월간/연간)
 
