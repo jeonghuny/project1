@@ -723,3 +723,288 @@ DELIMITER ;
   <summary><b>테스트-관리자</b></summary>
    
 ```sql
+-- 1. 아티스트 등록 (가장 먼저)
+DELIMITER //
+CREATE PROCEDURE sp_create_artist(
+    IN p_name VARCHAR(100),
+    IN p_agency VARCHAR(100),
+    IN p_debut_date DATE,
+    IN p_image_url TEXT,
+    OUT o_artist_id BIGINT  -- 생성된 ID를 반환해서 다음 단계에 넘겨줌
+)
+BEGIN
+    INSERT INTO artists (name, agency, debut_date, image_url)
+    VALUES (p_name, p_agency, p_debut_date, p_image_url);
+
+    SET o_artist_id = LAST_INSERT_ID();
+END //
+DELIMITER ;
+
+-- 2. 앨범 등록 (아티스트 ID 필요)
+DELIMITER //
+
+CREATE PROCEDURE sp_create_album(
+    IN p_title VARCHAR(255),
+    IN p_release_date DATE,
+    IN p_cover_img_url TEXT,
+    IN p_album_type VARCHAR(20),
+    IN p_artist_id BIGINT,      -- 1단계에서 받은 아티스트 ID
+    OUT o_album_id BIGINT       -- 생성된 앨범 ID 반환
+)
+BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error creating album';
+    END;
+
+    START TRANSACTION;
+        -- 앨범 본체 등록
+        INSERT INTO albums (title, release_date, cover_img_url, album_type)
+        VALUES (p_title, p_release_date, p_cover_img_url, p_album_type);
+
+        SET o_album_id = LAST_INSERT_ID();
+
+        -- 앨범-아티스트 관계 연결 (중계 테이블)
+        INSERT INTO album_Artist (album_id, artist_id, roles)
+        VALUES (o_album_id, p_artist_id, 'Main');
+    COMMIT;
+END //
+DELIMITER ;
+
+-- 3. 곡 등록 (앨범 ID, 아티스트 ID, 장르ID 필요) 
+-- 장르는 관리자가 추가
+장르등록) insert into genres (name) values ('R&B'), ('트로트'),('힙합');
+
+DELIMITER //
+CREATE PROCEDURE sp_create_song(
+    IN p_album_id BIGINT,       -- 앨범 ID
+    IN p_artist_id BIGINT,      -- 메인 가수 ID
+    IN p_genre_id BIGINT,       -- [NEW] 메인 장르 ID (예: 발라드, 힙합 등)
+    IN p_title VARCHAR(255),
+    IN p_track_number INT,
+    IN p_duration INT,
+    IN p_lyrics TEXT,
+    IN p_file_url TEXT,
+    IN p_is_title BOOLEAN,
+    IN p_artist_type VARCHAR(100)
+)
+BEGIN
+    DECLARE v_song_id BIGINT;
+    DECLARE v_genre_exists INT;
+
+    -- 에러 핸들러 (하나라도 실패하면 전체 취소)
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error creating song (Check Artist or Genre ID)';
+    END;
+
+    START TRANSACTION;
+
+    -- (선택) 장르 ID가 실제 존재하는지 체크
+    SELECT COUNT(*) INTO v_genre_exists FROM genres WHERE genre_id = p_genre_id;
+    IF v_genre_exists = 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Genre ID does not exist';
+    END IF;
+
+    -- 1. 곡 정보 등록 (songs)
+    INSERT INTO songs (album_id, title, track_number, duration, lyrics, file_url, is_title)
+    VALUES (p_album_id, p_title, p_track_number, p_duration, p_lyrics, p_file_url, p_is_title);
+
+    SET v_song_id = LAST_INSERT_ID();
+
+    -- 2. 곡-아티스트 연결 (song_Artist)
+    INSERT INTO song_Artist (song_id, artist_id, artist_type)
+    VALUES (v_song_id, p_artist_id, p_artist_type);
+
+    -- 3. [NEW] 곡-장르 연결 (song_Genre)
+    INSERT INTO song_Genre (song_id, genre_id)
+    VALUES (v_song_id, p_genre_id);
+
+    COMMIT;
+END //
+
+DELIMITER ;
+```
+
+  </details>
+
+   <details>
+  <summary><b>테스트 데이터 삽입</b></summary>
+   
+```sql
+DROP PROCEDURE IF EXISTS InsertTestData;
+
+DELIMITER //
+
+CREATE PROCEDURE InsertTestData()
+BEGIN
+    -- 외래 키 제약 조건 임시 비활성화 (순서 문제 방지)
+    SET FOREIGN_KEY_CHECKS = 0;
+
+    -- A. 핵심 엔티티 (Master Data)
+
+    -- 1. users 테이블 (5개)
+    INSERT INTO users (email, password, nickname, membership, is_admin) VALUES
+    ('user1@test.com', SHA2('pass1234', 256), 'MusicLover1', 'Premium', 0),
+    ('admin@test.com', SHA2('adminpass', 256), 'SystemAdmin', 'Premium', 1),
+    ('user3@test.com', SHA2('pass1234', 256), 'FreeUserA', 'Free', 0),
+    ('user4@test.com', SHA2('pass1234', 256), 'PremiumUserB', 'Premium', 0),
+    ('user5@test.com', SHA2('pass1234', 256), 'FreeUserC', 'Free', 0);
+
+    -- 2. artists 테이블 (5개)
+    INSERT INTO artists (name, agency, debut_date, image_url) VALUES
+    ('K-POP King', 'Big Hit', '2013-06-13', 'url_kpop_king'),
+    ('Pop Diva', 'JYP', '2010-07-01', 'url_pop_diva'),
+    ('Indie Band X', 'Self-made', '2018-01-01', 'url_indie_x'),
+    ('Classical Maestro', NULL, '1995-10-20', 'url_maestro'),
+    ('Hip-Hop Star', 'SM', '2020-03-05', 'url_hiphop_star');
+
+    -- 3. albums 테이블 (5개)
+    INSERT INTO albums (title, release_date, cover_img_url, album_type) VALUES
+    ('First Step', '2013-06-12', 'url_album1', 'Full'),
+    ('Summer Vibe', '2022-07-20', 'url_album2', 'EP'),
+    ('City Lights', '2023-11-01', 'url_album3', 'Single'),
+    ('Timeless Classics', '2005-01-01', 'url_album4', 'Full'),
+    ('Dark Paradise', '2024-05-15', 'url_album5', 'EP');
+
+    -- 4. songs 테이블 (5개)
+    INSERT INTO songs (album_id, title, track_number, duration, lyrics, file_url, is_title) VALUES
+    (1, 'Dynamite', 1, 180, 'Cool... Dynamite', 'url_song1', 1),
+    (1, 'Life Goes On', 2, 210, 'Life goes on, Let''s live on', 'url_song2', 0),
+    (2, 'Ocean Blue', 1, 245, 'Feeling the ocean blue', 'url_song3', 1),
+    (3, 'Midnight Drive', 1, 190, 'Driving under the city lights', 'url_song4', 1),
+    (5, 'Shadow', 3, 220, 'Walking in the shadow', 'url_song5', 0);
+
+    -- 5. genres 테이블 (5개)
+    INSERT INTO genres (name) VALUES
+    ('K-Pop'), ('Dance'), ('R&B'), ('Ballad'), ('Classic');
+
+    -- ---------------------------------
+    -- B. N:M 관계 중간 테이블 (Relational Entities)
+    -- 외래 키가 있는 테이블이므로, 위에서 삽입된 ID를 참조합니다.
+
+    -- 6. song_Artist 테이블 (5개)
+    INSERT INTO song_Artist (song_id, artist_id, artist_type) VALUES
+    (1, 1, 'Main'),       -- Dynamite (1) -> K-POP King (1)
+    (2, 1, 'Main'),       -- Life Goes On (2) -> K-POP King (1)
+    (3, 2, 'Main'),       -- Ocean Blue (3) -> Pop Diva (2)
+    (3, 3, 'Feat'),       -- Ocean Blue (3) -> Indie Band X (3) (피처링)
+    (4, 3, 'Main');       -- Midnight Drive (4) -> Indie Band X (3)
+
+    -- 7. song_Genre 테이블 (5개)
+    INSERT INTO song_Genre (song_id, genre_id) VALUES
+    (1, 1), -- Dynamite (1) -> K-Pop (1)
+    (1, 2), -- Dynamite (1) -> Dance (2)
+    (3, 1), -- Ocean Blue (3) -> K-Pop (1)
+    (4, 4), -- Midnight Drive (4) -> Ballad (4)
+    (5, 3); -- Shadow (5) -> R&B (3)
+
+    -- 11. playlists 테이블 (5개) - 8, 9, 10, 12, 13, 14, 15, 16번 테이블보다 먼저 생성되어야 참조 가능
+    INSERT INTO playlists (user_id, title, is_public, play_created_at) VALUES
+    (1, 'My Fave K-Pop', 1, NOW()),
+    (1, 'Chill Night', 0, NOW()),
+    (3, 'Study Time', 1, NOW()),
+    (4, 'Workout Mix', 1, NOW()),
+    (5, 'Private List', 0, NOW());
+
+    -- 8. playlist_Song 테이블 (5개)
+    INSERT INTO playlist_Song (playlist_id, song_id, display_order, added_at) VALUES
+    (1, 1, 1, NOW()), -- My Fave K-Pop (1) <- Dynamite (1)
+    (1, 2, 2, NOW()), -- My Fave K-Pop (1) <- Life Goes On (2)
+    (2, 3, 1, NOW()), -- Chill Night (2) <- Ocean Blue (3)
+    (3, 4, 1, NOW()), -- Study Time (3) <- Midnight Drive (4)
+    (4, 1, 1, NOW()); -- Workout Mix (4) <- Dynamite (1)
+
+    -- 9. user_Artist 테이블 (5개)
+    INSERT INTO user_Artist (user_id, artist_id, follow_created_at) VALUES
+    (1, 1, NOW()), -- MusicLover1 (1) -> K-POP King (1) 팔로우
+    (1, 2, NOW()), -- MusicLover1 (1) -> Pop Diva (2) 팔로우
+    (3, 3, NOW()), -- FreeUserA (3) -> Indie Band X (3) 팔로우
+    (4, 1, NOW()), -- PremiumUserB (4) -> K-POP King (1) 팔로우
+    (5, 2, NOW()); -- FreeUserC (5) -> Pop Diva (2) 팔로우
+
+    -- 10. album_Artist 테이블 (5개)
+    INSERT INTO album_Artist (album_id, artist_id, roles) VALUES
+    (1, 1, 'Main'),       -- First Step (1) -> K-POP King (1)
+    (2, 2, 'Main'),       -- Summer Vibe (2) -> Pop Diva (2)
+    (2, 3, 'Featuring'),  -- Summer Vibe (2) -> Indie Band X (3) (합작)
+    (3, 3, 'Main'),       -- City Lights (3) -> Indie Band X (3)
+    (4, 4, 'Main');       -- Timeless Classics (4) -> Classical Maestro (4)
+
+    -- ---------------------------------
+    -- C. 기능 및 결제 (Functional & Payment)
+
+    -- 12. subscription 테이블 (5개)
+    INSERT INTO subscription (name, price, period_days) VALUES
+    ('Standard 30 Days', 9900, 30),
+    ('Premium 30 Days', 14900, 30),
+    ('Standard 1 Year', 99000, 365),
+    ('Free Trial', 0, 7),
+    ('Premium Family', 24900, 30);
+
+    -- 13. user_Subscription 테이블 (5개)
+    INSERT INTO user_Subscription (user_id, sub_id, start_date, end_date, status, auto_renew) VALUES
+    (1, 2, DATE_SUB(NOW(), INTERVAL 15 DAY), DATE_ADD(NOW(), INTERVAL 15 DAY), 'Active', 1),  -- 유저1: 프리미엄 활성 (15일 전 시작)
+    (2, 2, DATE_SUB(NOW(), INTERVAL 35 DAY), DATE_SUB(NOW(), INTERVAL 5 DAY), 'Expired', 0), -- 유저2: 만료됨
+    (3, 1, DATE_SUB(NOW(), INTERVAL 10 DAY), DATE_ADD(NOW(), INTERVAL 20 DAY), 'Active', 1),  -- 유저3: 스탠다드 활성
+    (4, 4, DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_ADD(NOW(), INTERVAL 4 DAY), 'Active', 0),    -- 유저4: 무료 체험 활성
+    (5, 2, DATE_SUB(NOW(), INTERVAL 200 DAY), DATE_ADD(NOW(), INTERVAL 165 DAY), 'Active', 1); -- 유저5: 연간 프리미엄
+
+    -- 14. payments 테이블 (5개)
+    -- us_id는 13번 테이블에서 삽입된 ID를 참조
+    INSERT INTO payments (user_id, us_id, amount, pay_method, paid_at, is_success) VALUES
+    (1, 1, 14900, 'Credit Card', DATE_SUB(NOW(), INTERVAL 15 DAY), 'true'),
+    (2, 2, 14900, 'Credit Card', DATE_SUB(NOW(), INTERVAL 35 DAY), 'true'),
+    (3, 3, 9900, 'Mobile', DATE_SUB(NOW(), INTERVAL 10 DAY), 'true'),
+    (4, 4, 0, 'Trial', DATE_SUB(NOW(), INTERVAL 3 DAY), 'true'),
+    (1, NULL, 500, 'Gift Card', DATE_SUB(NOW(), INTERVAL 2 DAY), 'true'); -- 구독권 결제 외 기타 결제 예시
+
+    -- ---------------------------------
+    -- D. 로그, 통계 및 차트 (Log & Statistics)
+
+    -- 15. play_Log 테이블 (5개)
+    INSERT INTO play_Log (user_id, song_id, started_at, ended_at) VALUES
+    (1, 1, NOW(), DATE_ADD(NOW(), INTERVAL 3 MINUTE)),
+    (1, 2, DATE_ADD(NOW(), INTERVAL 5 MINUTE), DATE_ADD(NOW(), INTERVAL 9 MINUTE)),
+    (3, 1, DATE_ADD(NOW(), INTERVAL 10 MINUTE), DATE_ADD(NOW(), INTERVAL 13 MINUTE)),
+    (4, 3, DATE_ADD(NOW(), INTERVAL 15 MINUTE), DATE_ADD(NOW(), INTERVAL 19 MINUTE)),
+    (1, 1, DATE_ADD(NOW(), INTERVAL 20 MINUTE), DATE_ADD(NOW(), INTERVAL 23 MINUTE)); -- 유저1의 Dynamite 두 번째 재생
+
+    -- 16. userSongStat 테이블 (5개)
+    INSERT INTO userSongStat (user_id, song_id, play_count, last_played_at, is_like) VALUES
+    (1, 1, 2, DATE_ADD(NOW(), INTERVAL 23 MINUTE), 1), -- 유저1: Dynamite 2회 재생 (Like)
+    (1, 2, 1, DATE_ADD(NOW(), INTERVAL 9 MINUTE), 0), -- 유저1: Life Goes On 1회 재생 (No Like)
+    (3, 1, 1, DATE_ADD(NOW(), INTERVAL 13 MINUTE), 1), -- 유저3: Dynamite 1회 재생 (Like)
+    (4, 3, 1, DATE_ADD(NOW(), INTERVAL 19 MINUTE), 1), -- 유저4: Ocean Blue 1회 재생 (Like)
+    (5, 5, 5, DATE_SUB(NOW(), INTERVAL 1 HOUR), 0); -- 유저5: Shadow 5회 재생 (No Like)
+
+    -- 17. charts 테이블 (5개)
+    INSERT INTO charts (title, chart_type, base_time) VALUES
+    ('오늘의 Top 100', 'Daily', '2025-12-04 00:00:00'),
+    ('2025년 49주차 주간 차트', 'Weekly', '2025-12-01 00:00:00'),
+    ('2025년 11월 월간 차트', 'Monthly', '2025-11-01 00:00:00'),
+    ('어제 Top 100', 'Daily', '2025-12-03 00:00:00'),
+    ('2025년 48주차 주간 차트', 'Weekly', '2025-11-24 00:00:00');
+
+    -- 18. chart_Song 테이블 (5개)
+    INSERT INTO chart_Song (chart_id, song_id, rank, rank_change) VALUES
+    (1, 1, 1, 0), -- 오늘 차트(1) - Dynamite(1) - 1위 (변동 없음)
+    (1, 3, 2, 1), -- 오늘 차트(1) - Ocean Blue(3) - 2위 (1단계 상승)
+    (2, 1, 3, -2), -- 주간 차트(2) - Dynamite(1) - 3위 (2단계 하락)
+    (3, 4, 5, NULL), -- 월간 차트(3) - Midnight Drive(4) - 5위 (신규/정보 없음)
+    (4, 1, 1, -1); -- 어제 차트(4) - Dynamite(1) - 1위 (-1은 전날 차트가 없는 경우 등 상황에 따라 다르게 해석)
+
+    -- 외래 키 제약 조건 재활성화
+    SET FOREIGN_KEY_CHECKS = 1;
+END //
+
+DELIMITER ;
+
+
+-- 테스트 데이터 호출
+-- -------------------------------------------------------------
+CALL InsertTestData();
+```
