@@ -798,8 +798,34 @@ DELETE FROM user_Artist WHERE user_id = p_user_id AND artist_id = p_artist_id;
 END//
 DELIMITER ;
 
--- 14) my 아티스트 조회
+-- 14) my 아티스트 목록 조회
+DELIMITER //
+CREATE PROCEDURE sp_get_my_followed_artists(
+    IN p_user_id BIGINT
+)
+BEGIN
+    SELECT 
+        a.artist_id,
+        a.name AS '아티스트 이름',
+        a.agency AS '소속사',
+        a.image_url AS '아티스트 이미지',
+        a.debut_date AS '데뷔 일자',
+        a.agency AS '소속사',
 
+        -- 팔로우한 날짜 (언제부터 팬이었는지)
+        ua.follow_created_at AS '팔로우 일자',
+
+        -- 이 가수의 총 팔로워 수
+        (SELECT COUNT(*) FROM user_Artist WHERE artist_id = a.artist_id) AS '총 팔로우 수'
+
+    FROM user_Artist ua
+    JOIN artists a ON ua.artist_id = a.artist_id
+    WHERE ua.user_id = p_user_id
+    ORDER BY ua.follow_created_at DESC; -- 최근에 팔로우한 가수부터
+
+END //
+
+DELIMITER ;
 
 -- 15) 플레이리스트 생성
 DELIMITER //
@@ -922,10 +948,7 @@ DELIMITER ;
 -- 20) 구독 상품 안내
 
 
--- 21) 구독 신청
-
-
--- 22) 구독 해제
+-- 21) 구독 해제
 DELIMITER //
 CREATE PROCEDURE sp_update_subscription_renewal(
     IN p_user_id BIGINT,
@@ -979,7 +1002,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- 23)결제 내역 조회
+-- 22)결제 내역 조회
 DELIMITER //
 
 CREATE PROCEDURE sp_user_subscription_history(
