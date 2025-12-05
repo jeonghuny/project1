@@ -844,7 +844,7 @@ SET o_playlist_id = LAST_INSERT_ID();
 END//
 DELIMITER ;
 
--- 16) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
+-- 16-1) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
 DELIMITER //
 CREATE PROCEDURE sp_add_song_to_playlist(
 IN p_playlist_id BIGINT,
@@ -866,7 +866,7 @@ VALUES (p_playlist_id, p_song_id, p_display_order, NOW());
 END//
 DELIMITER ;
 
--- 17) 플레이리스트에서 곡 제거
+-- 16-2) 플레이리스트에서 곡 제거
 DELIMITER //
 CREATE PROCEDURE sp_remove_song_from_playlist(
 IN p_playlist_id BIGINT,
@@ -942,13 +942,14 @@ BEGIN
 END//
 DELIMITER ;
 
--- 19) 인기차트 조회(주간/월간/연간)
+-- 19) 플레이리스트 수정
 
+-- 20) 인기차트 조회(주간/월간/연간)
 
--- 20) 구독 상품 안내
+-- 21) 구독권 종류 조회
+select name AS '구독권 종류', price AS '구독권 가격', period_days AS '구독권 기간' from subscription;
 
-
--- 21) 구독 해제
+-- 22) 구독 해제
 DELIMITER //
 CREATE PROCEDURE sp_update_subscription_renewal(
     IN p_user_id BIGINT,
@@ -1002,7 +1003,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- 22)결제 내역 조회
+-- 23)결제 내역 조회
 DELIMITER //
 
 CREATE PROCEDURE sp_user_subscription_history(
