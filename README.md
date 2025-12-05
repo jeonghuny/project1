@@ -144,6 +144,7 @@ Songs 테이블의 is_title 컬럼으로 앨범 내 타이틀곡 식별 강조.
 ---
 
 ### 쿼리
+
   <details>
   <summary><b>DDL</b></summary>
 
@@ -345,10 +346,380 @@ CREATE TABLE chart_Song (
   </details>
   
   <details>
-  <summary><b>DML</b></summary>
-내용ㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇ
+  <summary><b>테스트-유저</b></summary>
+
+```sql
+    -- 1) 회원가입 (중복검사 및 비밀번호 해시)
+DELIMITER //
+CREATE PROCEDURE sp_register_user(
+    IN p_email VARCHAR(100),
+    IN p_password VARCHAR(255),
+    IN p_nickname VARCHAR(50)
+)
+BEGIN
+    DECLARE v_cnt INT DEFAULT 0;
+    START TRANSACTION;
+    -- 이메일 중복 체크
+    SELECT COUNT(*) INTO v_cnt FROM users WHERE email = p_email;
+    IF v_cnt > 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Email already exists';
+    END IF;
+    -- 닉네임 중복 체크
+    SELECT COUNT(*) INTO v_cnt FROM users WHERE nickname = p_nickname;
+    IF v_cnt > 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Nickname already exists';
+    END IF;
+    -- 사용자 추가 (비밀번호 해시 없이 원문 저장)
+    INSERT INTO users (email, password, nickname, membership, created_at, is_admin)
+    VALUES (p_email, p_password, p_nickname, 'Free', NOW(), 0);
+    COMMIT;
+END //
+
+    -- 2) 로그인 (비밀번호 검증 후 user_id 반환. 해시관련 로직 삭제, 유효성검증)
+DELIMITER //
+CREATE PROCEDURE sp_login_user(
+    IN p_email VARCHAR(100),
+    IN p_password VARCHAR(255),
+    OUT o_user_id BIGINT
+)
+BEGIN
+    -- 입력받은 비밀번호(p_password)를 그대로 비교
+    -- 데이터가 없으면 o_user_id에 NULL이 할당됨
+    SET o_user_id = (SELECT user_id 
+                     FROM users 
+                     WHERE email = p_email AND password = p_password);
+    -- 일치하는 사용자가 없는 경우
+    IF o_user_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid credentials';
+    END IF;
+END //
+DELIMITER ;
+
+-- 3) 비밀번호 변경(해시 로직 삭제)
+DELIMITER //
+CREATE PROCEDURE sp_update_password(
+    IN p_user_id BIGINT,
+    IN p_old_password VARCHAR(255),
+    IN p_new_password VARCHAR(255)
+)
+BEGIN
+    DECLARE v_cnt INT DEFAULT 0;
+    -- 기존 비밀번호가 맞는지 확인 (해시 없이 원문 비교)
+    SELECT COUNT(*) INTO v_cnt 
+    FROM users 
+    WHERE user_id = p_user_id AND password = p_old_password;
+
+    IF v_cnt = 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Old password is incorrect';
+    END IF;
+    -- 새 비밀번호로 업데이트 (해시 없이 원문 저장)
+    UPDATE users 
+    SET password = p_new_password 
+    WHERE user_id = p_user_id;
+END //
+DELIMITER ;
+
+
+
+-- 5) 구독 적용: User_Subscription 추가 및 Users.membership 업데이트 (간단한 예)
+DELIMITER //
+CREATE PROCEDURE sp_subscribe_user(
+IN p_user_id BIGINT,
+IN p_sub_id BIGINT,
+IN p_start_date DATETIME,
+IN p_period_days INT,
+IN p_auto_renew BOOLEAN,
+IN p_amount INT,
+IN p_pay_method VARCHAR(50)
+)
+BEGIN
+DECLARE v_end_date DATETIME;
+DECLARE v_us_id BIGINT;
+SET v_end_date = DATE_ADD(p_start_date, INTERVAL p_period_days DAY);
+START TRANSACTION;
+INSERT INTO user_Subscription (user_id, sub_id, start_date, end_date, status, auto_renew)
+VALUES (p_user_id, p_sub_id, p_start_date, v_end_date, 'Active', p_auto_renew);
+SET v_us_id = LAST_INSERT_ID();
+INSERT INTO payments (user_id, us_id, amount, pay_method, paid_at, is_success)
+VALUES (p_user_id, v_us_id, p_amount, p_pay_method, NOW(), 'true');
+UPDATE users SET membership = 'Premium' WHERE user_id = p_user_id;
+COMMIT;
+END//
+DELIMITER ;
+
+-- 7) 곡 검색 기능
+-- 조회 쿼리 두번 사용하여 사용자는 하나의 검색창에 키워드를 입력했을 때, 
+-- 그 키워드가 포함된 곡, 가수, 앨범, 가사, 장르 뿐만 아니라 
+-- 공개된 플레이리스트 제목까지 한 번에 볼 수 있게 됨.
+DELIMITER //
+CREATE PROCEDURE sp_search_all_content(
+    IN p_keyword VARCHAR(255)
+)
+BEGIN
+    -- 키워드 앞뒤에 %를 붙여 부분 일치 검색을 준비합니다.
+    SET @keyword_pattern = CONCAT('%',p_keyword, '%');
+
+    -- =======================================================
+    -- 1. 곡(Song) 및 관련 정보 통합 검색 결과 반환
+    -- (곡 제목, 가사, 앨범명, 가수명, 장르명)
+    -- =======================================================
+    SELECT DISTINCT
+        s.song_id,
+        s.title AS song_title,
+        a.title AS album_title,
+        GROUP_CONCAT(DISTINCT art.name SEPARATOR ', ') AS artists_involved,
+        GROUP_CONCAT(DISTINCT g.name SEPARATOR ', ') AS genres_involved,
+        s.duration,
+        s.is_title
+    FROM
+        songs s
+    JOIN
+        albums a ON s.album_id = a.album_id
+    LEFT JOIN
+        song_Artist sa ON s.song_id = sa.song_id
+    LEFT JOIN
+        artists art ON sa.artist_id = art.artist_id
+    LEFT JOIN
+        song_Genre sg ON s.song_id = sg.song_id
+    LEFT JOIN
+        genres g ON sg.genre_id = g.genre_id
+    WHERE
+        s.title LIKE @keyword_pattern       -- 1. 곡 제목 검색
+        OR s.lyrics LIKE @keyword_pattern   -- 2. 가사 검색
+        OR a.title LIKE @keyword_pattern    -- 3. 앨범명 검색
+        OR art.name LIKE @keyword_pattern   -- 4. 가수명 검색
+        OR g.name LIKE @keyword_pattern     -- 5. 장르명 검색
+    GROUP BY
+        s.song_id, s.title, a.title, s.duration, s.is_title
+    ORDER BY
+        s.title;
+
+    -- =======================================================
+    -- 2. 공개된 플레이리스트 통합 검색 결과 반환
+    -- (플레이리스트 제목)
+    -- =======================================================
+    SELECT
+        p.playlist_id,
+        p.title AS playlist_title,
+        u.nickname AS creator_nickname,
+        p.play_created_at,
+        COUNT(ps.song_id) AS song_count
+    FROM
+        playlists p
+    JOIN
+        users u ON p.user_id = u.user_id
+    LEFT JOIN
+        playlist_Song ps ON p.playlist_id = ps.playlist_id
+    WHERE
+        p.is_public = 1                     -- 공개된 플레이리스트만
+        AND p.title LIKE @keyword_pattern   -- 플레이리스트 제목 검색
+    GROUP BY
+        p.playlist_id, p.title, u.nickname, p.play_created_at
+    ORDER BY
+        p.title;
+
+END//
+
+DELIMITER ;
+
+-- 8) 곡 재생 기능 (곡 재생 기록 로그 및 통계 업데이트)
+
+DELIMITER //
+
+CREATE PROCEDURE sp_play_song(
+    IN p_user_id BIGINT,
+    IN p_song_id BIGINT,
+    IN p_started_at DATETIME,
+    IN p_ended_at DATETIME
+)
+play_song:
+BEGIN
+    -- 재생 시간을 초 단위로 계산합니다. (간단한 유효성 검사)
+    DECLARE v_duration_check INT;
+
+    -- 트랜잭션 시작
+    START TRANSACTION;
+
+    -- 1. 유효성 검사 (재생 시간이 0초 이하이면 처리 중단)
+    -- 시작 시간(p_started_at)과 종료 시간(p_ended_at) 사이의 간격을 지정된 단위로 반환
+    SET v_duration_check = TIMESTAMPDIFF(SECOND, p_started_at, p_ended_at);
+    
+    IF v_duration_check <= 0 THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Playback duration must be positive.';
+        LEAVE play_song;
+    END IF;
+
+    -- 2. play_Log 테이블에 재생 기록 로그 추가 (무조건 INSERT)
+    INSERT INTO play_Log (user_id, song_id, started_at, ended_at)
+    VALUES (p_user_id, p_song_id, p_started_at, p_ended_at);
+
+    -- 3. userSongStat 테이블 업데이트/삽입 (누적 통계 처리)
+
+    -- 이미 해당 곡을 재생한 기록이 있는지 확인
+    INSERT INTO userSongStat (user_id, song_id, play_count, last_played_at, is_like)
+    VALUES (p_user_id, p_song_id, 1, p_ended_at, NULL) -- 새 레코드를 추가하려 시도
+    ON DUPLICATE KEY UPDATE -- 이미 있다면 (user_id, song_id가 복합 PK이므로) play_count(재생 수) + 1 업데이트 수행
+        play_count = play_count + 1,
+        last_played_at = p_ended_at;
+        
+    -- 트랜잭션 완료
+    COMMIT;
+END//
+
+DELIMITER ;
+
+
+
+-- 10) 아티스트 팔로우
+DELIMITER //
+CREATE PROCEDURE sp_follow_artist(
+IN p_user_id BIGINT,
+IN p_artist_id BIGINT
+)
+BEGIN
+DECLARE v_exists INT DEFAULT 0;
+SELECT COUNT(*) INTO v_exists FROM user_Artist WHERE user_id = p_user_id AND artist_id = p_artist_id;
+IF v_exists > 0 THEN
+SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Already following';
+END IF;
+INSERT INTO user_Artist (user_id, artist_id, follow_created_at) VALUES (p_user_id, p_artist_id, NOW());
+END//
+DELIMITER ;
+
+
+-- 11) 아티스트 / 언팔로우
+DELIMITER //
+CREATE PROCEDURE sp_unfollow_artist(
+IN p_user_id BIGINT,
+IN p_artist_id BIGINT
+)
+BEGIN
+DELETE FROM user_Artist WHERE user_id = p_user_id AND artist_id = p_artist_id;
+END//
+DELIMITER ;
+
+-- 12) 플레이리스트 생성
+DELIMITER //
+CREATE PROCEDURE sp_create_playlist(
+IN p_user_id BIGINT,
+IN p_title VARCHAR(100),
+IN p_is_public BOOLEAN,
+OUT o_playlist_id BIGINT
+)
+BEGIN
+INSERT INTO playlists (user_id, title, is_public, play_created_at)
+VALUES (p_user_id, p_title, p_is_public, NOW());
+SET o_playlist_id = LAST_INSERT_ID();
+-- LAST_INSERT_ID()는 현재 DB 세션(connection) 에서 마지막으로 실행한 AUTO_INCREMENT 값(직전 INSERT로 생성된 PK 값)을 반환하는 MySQL 내장 함수
+-- OUT o_playlist_id 는 방금 생성된 playlist_id를 돌려주기 위한 반환값
+END//
+DELIMITER ;
+
+-- 13) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
+DELIMITER //
+CREATE PROCEDURE sp_add_song_to_playlist(
+IN p_playlist_id BIGINT,
+IN p_song_id BIGINT,
+IN p_display_order INT
+)
+BEGIN
+DECLARE v_max_order INT;
+IF p_display_order IS NULL OR p_display_order <= 0 THEN
+SELECT IFNULL(MAX(display_order),0) + 1 INTO v_max_order FROM playlist_Song WHERE playlist_id = p_playlist_id;
+SET p_display_order = v_max_order;
+ELSE
+-- 다른 곡들의 order 조정 (간단히 뒤로 밀기)
+UPDATE playlist_Song SET display_order = display_order + 1
+WHERE playlist_id = p_playlist_id AND display_order >= p_display_order;
+END IF;
+INSERT INTO playlist_Song (playlist_id, song_id, display_order, added_at)
+VALUES (p_playlist_id, p_song_id, p_display_order, NOW());
+END//
+DELIMITER ;
+
+-- 14) 플레이리스트에서 곡 제거
+DELIMITER //
+CREATE PROCEDURE sp_remove_song_from_playlist(
+IN p_playlist_id BIGINT,
+IN p_song_id BIGINT
+)   
+BEGIN
+DELETE FROM playlist_Song WHERE playlist_id = p_playlist_id AND song_id = p_song_id;
+END//
+DELIMITER ;
+
+-- 15) 플레이리스트 내 곡 순서 변경 (안전하게 트랜잭션으로 처리)
+DELIMITER //
+
+CREATE PROCEDURE sp_change_playlist_order(
+    IN p_playlist_id BIGINT,
+    IN p_song_id BIGINT,
+    IN p_new_order INT
+)
+sp_change_playlist_order: -- <<<<< 프로시저 이름과 동일한 레이블 추가
+BEGIN
+    -- 1. 변수 선언
+    DECLARE v_old_order INT;
+
+    -- 2. 트랜잭션 시작
+    START TRANSACTION;
+
+    -- 3. 현재 순서 조회 및 동시성 제어를 위한 락 (FOR UPDATE)
+    SELECT display_order 
+      INTO v_old_order 
+      FROM playlist_Song 
+     WHERE playlist_id = p_playlist_id 
+       AND song_id = p_song_id 
+       FOR UPDATE;
+
+    -- 4. 예외 처리: 플레이리스트에 곡이 없는 경우
+    IF v_old_order IS NULL THEN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Song not in playlist';
+    END IF;
+
+    -- 5. 현재 순서와 같으면 변경 불필요
+    IF p_new_order = v_old_order THEN
+        COMMIT;
+        -- 레이블이 정의되었으므로 LEAVE 사용 가능
+        LEAVE sp_change_playlist_order;
+    END IF;
+
+    -- 6. 순서 변경 로직 (display_order 값이 클수록 플레이리스트에서 더 뒤쪽 순서)
+    IF p_new_order < v_old_order THEN
+        -- 끼워넣기 (뒤에서 앞으로 이동): 범위에 있는 항목들의 순서를 +1 증가
+        UPDATE playlist_Song 
+           SET display_order = display_order + 1
+         WHERE playlist_id = p_playlist_id 
+           AND display_order >= p_new_order 
+           AND display_order < v_old_order;
+    ELSE
+        -- 뒤쪽순서으로 이동 (앞에서 뒤로 이동): 범위에 있는 항목들의 순서를 -1 감소
+        UPDATE playlist_Song 
+           SET display_order = display_order - 1
+         WHERE playlist_id = p_playlist_id 
+           AND display_order <= p_new_order 
+           AND display_order > v_old_order;
+    END IF;
+
+    -- 7. 대상 곡의 순서를 새로운 순서로 업데이트
+    UPDATE playlist_Song 
+       SET display_order = p_new_order 
+     WHERE playlist_id = p_playlist_id 
+       AND song_id = p_song_id;
+
+    -- 8. 트랜잭션 완료
+    COMMIT;
+END//
+DELIMITER ;
+```
+
   </details>
-    <details>
-  <summary><b>프로시저</b></summary>
-내용ㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇㅇ
-    </details>
+
+ <details>
+  <summary><b>테스트-관리자</b></summary>
+   
+```sql
