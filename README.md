@@ -661,7 +661,7 @@ CREATE PROCEDURE sp_get_song_detail(
 BEGIN
     SELECT 
         s.title AS '곡 제목', 
-        al.title AS '엘밤',
+        al.title AS '앨범',
         al.cover_img_url AS '앨범 이미지',
         al.release_date AS '발매일',
 
