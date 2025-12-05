@@ -421,7 +421,55 @@ BEGIN
 END //
 DELIMITER ;
 
+-- 4) 회원 탈퇴
+DELIMITER //
 
+CREATE PROCEDURE sp_delete_user(
+    IN p_user_id BIGINT
+)
+BEGIN
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+    END;
+
+    START TRANSACTION;
+
+    -- 1. 결제 내역 삭제
+    DELETE p
+    FROM payments p
+    JOIN user_Subscription us ON p.us_id = us.us_id
+    WHERE us.user_id = p_user_id;
+
+    -- 2. 구독 내역 삭제
+    DELETE FROM user_Subscription WHERE user_id = p_user_id;
+
+    -- 3. 회원-좋아요 통계 삭제
+    DELETE FROM userSongStat WHERE user_id = p_user_id;
+
+    -- 4. 재생 로그 삭제
+    DELETE FROM play_Log WHERE user_id = p_user_id;
+
+    -- 5. 플레이리스트 곡 삭제
+    DELETE ps
+    FROM playlist_Song ps
+    JOIN playlists pl ON ps.playlist_id = pl.playlist_id
+    WHERE pl.user_id = p_user_id;
+
+    -- 6. 플레이리스트 삭제
+    DELETE FROM playlists WHERE user_id = p_user_id;
+
+    -- 7. 회원-아티스트 팔로우 삭제
+    DELETE FROM user_Artist WHERE user_id = p_user_id;
+
+    -- 8. 최종 사용자 정보 삭제
+    DELETE FROM users WHERE user_id = p_user_id;
+
+    COMMIT;
+
+END//
+
+DELIMITER ;
 
 -- 5) 구독 적용: User_Subscription 추가 및 Users.membership 업데이트 (간단한 예)
 DELIMITER //
@@ -449,7 +497,7 @@ COMMIT;
 END//
 DELIMITER ;
 
--- 7) 곡 검색 기능
+-- 6) 곡 검색 기능
 -- 조회 쿼리 두번 사용하여 사용자는 하나의 검색창에 키워드를 입력했을 때, 
 -- 그 키워드가 포함된 곡, 가수, 앨범, 가사, 장르 뿐만 아니라 
 -- 공개된 플레이리스트 제목까지 한 번에 볼 수 있게 됨.
@@ -524,7 +572,7 @@ END//
 
 DELIMITER ;
 
--- 8) 곡 재생 기능 (곡 재생 기록 로그 및 통계 업데이트)
+-- 7) 곡 재생 기능 (곡 재생 기록 로그 및 통계 업데이트)
 
 DELIMITER //
 
@@ -571,26 +619,175 @@ END//
 
 DELIMITER ;
 
-
-
--- 10) 아티스트 팔로우
+-- 8) 좋아요 누르기
 DELIMITER //
-CREATE PROCEDURE sp_follow_artist(
+CREATE PROCEDURE sp_like_song(
 IN p_user_id BIGINT,
-IN p_artist_id BIGINT
+IN p_song_id BIGINT
 )
 BEGIN
 DECLARE v_exists INT DEFAULT 0;
-SELECT COUNT(*) INTO v_exists FROM user_Artist WHERE user_id = p_user_id AND artist_id = p_artist_id;
-IF v_exists > 0 THEN
-SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Already following';
+
+
+START TRANSACTION;
+SELECT COUNT(*) INTO v_exists FROM userSongStat WHERE user_id = p_user_id AND song_id = p_song_id;
+IF v_exists = 0 THEN
+INSERT INTO userSongStat (user_id, song_id, play_count, last_played_at, is_like)
+VALUES (p_user_id, p_song_id, 0, NULL, TRUE);
+ELSE
+UPDATE userSongStat SET is_like = TRUE WHERE user_id = p_user_id AND song_id = p_song_id;
 END IF;
-INSERT INTO user_Artist (user_id, artist_id, follow_created_at) VALUES (p_user_id, p_artist_id, NOW());
+COMMIT;
 END//
 DELIMITER ;
 
+--9)좋아요 취소하기
+DELIMITER $$
+CREATE PROCEDURE sp_unlike_song(
+IN p_user_id BIGINT,
+IN p_song_id BIGINT
+)
+BEGIN
+UPDATE userSongStat SET is_like = FALSE WHERE user_id = p_user_id AND song_id = p_song_id;
+END$$
+DELIMITER ;
 
--- 11) 아티스트 / 언팔로우
+-- 10) 곡 상세 정보
+DELIMITER //
+CREATE PROCEDURE sp_get_song_detail(
+    IN p_song_id BIGINT,
+    IN p_user_id BIGINT  -- 좋아요 여부 확인용 (비로그인이면 NULL )
+)
+BEGIN
+    SELECT 
+        s.title AS '곡 제목', 
+        al.title AS '엘밤',
+        al.cover_img_url AS '앨범 이미지',
+        al.release_date AS '발매일',
+
+        -- 아티스트 정보 (여러 명일 경우 콤마로 합침)
+        GROUP_CONCAT(DISTINCT a.name ORDER BY a.name SEPARATOR ', ') AS '아티스트',
+
+        -- 장르 정보 (여러 개일 경우 콤마로 합침)
+        GROUP_CONCAT(DISTINCT g.name ORDER BY g.name SEPARATOR ', ') AS '장르',
+
+        -- 음원 및 가사
+        s.file_url AS '음원파일경로',
+        s.lyrics AS '가사',
+        s.duration AS '재생시간',
+
+        -- 좋아요 여부 (로그인 유저 기준, 없으면 0)
+        COALESCE(uss.is_like, 0) AS '좋아요여부',
+
+        -- 총 좋아요 수
+        (SELECT COUNT(*) FROM userSongStat WHERE song_id = s.song_id AND is_like = 1) AS '총 좋아요 수'
+
+    FROM songs s
+    -- 1. 앨범 조인 (필수)
+    JOIN albums al ON s.album_id = al.album_id
+
+    -- 2. 아티스트 조인 (N:M -> 중계테이블 -> 아티스트)
+    LEFT JOIN song_Artist sa ON s.song_id = sa.song_id
+    LEFT JOIN artists a ON sa.artist_id = a.artist_id
+
+    -- 3. 장르 조인 (N:M -> 중계테이블 -> 장르)
+    LEFT JOIN song_Genre sg ON s.song_id = sg.song_id
+    LEFT JOIN genres g ON sg.genre_id = g.genre_id
+
+    -- 4. 좋아요 정보 조인 (특정 유저)
+    LEFT JOIN userSongStat uss ON s.song_id = uss.song_id AND uss.user_id = p_user_id
+
+    WHERE s.song_id = p_song_id
+    GROUP BY s.song_id;
+
+END //
+
+DELIMITER ;
+
+-- 11) 앨범정보조회 (앨범 정보 조회, 수록곡 리스트 조회)
+DELIMITER //
+CREATE PROCEDURE sp_get_album_detail(
+    IN p_album_id BIGINT
+)
+BEGIN
+    SELECT 
+        -- [앨범 정보] (수록곡 여러개면 반복됨)
+        al.title AS '앨범 타이틀',
+        al.cover_img_url AS '앨범 이미지',
+        al.release_date AS '앨범 발매일',
+        al.album_type AS '앨범 타입',
+        -- 앨범 참여 아티스트
+        (SELECT GROUP_CONCAT(DISTINCT a.name ORDER BY a.name SEPARATOR ', ')
+         FROM album_Artist aa
+         JOIN artists a ON aa.artist_id = a.artist_id
+         WHERE aa.album_id = al.album_id) AS '앨범 참여 아티스트',
+
+        -- [수록곡 정보]
+        s.track_number AS '트랙번호',
+        s.title AS '곡 이름',
+        s.is_title AS '타이틀 여부',
+        s.duration AS '재생시간',
+        s.file_url AS '오디오파일url', 
+        (SELECT COUNT(*) FROM userSongStat WHERE song_id = s.song_id AND is_like = 1) AS '총 좋아요 수',
+        GROUP_CONCAT(DISTINCT sa_artist.name ORDER BY sa_artist.name SEPARATOR ', ') AS '아티스트'
+
+    FROM albums al
+    JOIN songs s ON al.album_id = s.album_id
+    LEFT JOIN song_Artist sa ON s.song_id = sa.song_id
+    LEFT JOIN artists sa_artist ON sa.artist_id = sa_artist.artist_id
+
+    WHERE al.album_id = p_album_id
+    GROUP BY s.song_id, s.track_number
+    ORDER BY s.track_number ASC;
+
+END //
+
+DELIMITER ;
+
+-- 12) 아티스트 정보 조회(아티스트 정보, 참여한 곡/앨범)
+DELIMITER //
+CREATE PROCEDURE sp_get_artist_detail(
+    IN p_artist_id BIGINT
+)
+BEGIN
+    SELECT 
+        -- [1. 아티스트 기본 정보] (매 행마다 반복)
+        a.name AS '아티스트 이름',
+        a.agency AS '소속사',
+        a.debut_date AS '데뷔일',
+        a.image_url  AS '대표이미지',
+
+        -- [2. 팔로우 정보]
+        -- 이 아티스트의 총 팔로워 수
+        (SELECT COUNT() FROM user_Artist WHERE artist_id = a.artist_id) AS '총 팔로워 수',
+        -- [3. 곡 & 앨범 정보] (리스트)
+        s.title AS '곡 이름',
+        sa.artist_type AS '아티스트 타입', -- 이 곡에서의 역할 (Main, Feat 등)
+
+        -- 앨범 정보 (어떤 앨범에 실린 곡인지)
+        al.title AS '앨범 타이틀',
+        al.release_date  AS '앨범 발매일',
+
+        -- 곡 좋아요 수
+        (SELECT COUNT() FROM userSongStat WHERE song_id = s.song_id AND is_like = 1) AS '총 좋아요 수'
+
+    FROM artists a
+    -- 아티스트가 참여한 곡 찾기
+    JOIN song_Artist sa ON a.artist_id = sa.artist_id
+    JOIN songs s ON sa.song_id = s.song_id
+    -- 그 곡이 속한 앨범 정보
+    JOIN albums al ON s.album_id = al.album_id
+
+    WHERE a.artist_id = p_artist_id
+
+    -- 정렬: 최신 앨범 곡부터, 같은 앨범이면 트랙 순서대로
+    ORDER BY al.release_date DESC, s.track_number ASC;
+
+END //
+
+DELIMITER ;
+
+-- 13) 아티스트 팔로우 / 언팔로우
 DELIMITER //
 CREATE PROCEDURE sp_unfollow_artist(
 IN p_user_id BIGINT,
@@ -601,7 +798,10 @@ DELETE FROM user_Artist WHERE user_id = p_user_id AND artist_id = p_artist_id;
 END//
 DELIMITER ;
 
--- 12) 플레이리스트 생성
+-- 14) my 아티스트 조회
+
+
+-- 15) 플레이리스트 생성
 DELIMITER //
 CREATE PROCEDURE sp_create_playlist(
 IN p_user_id BIGINT,
@@ -618,7 +818,7 @@ SET o_playlist_id = LAST_INSERT_ID();
 END//
 DELIMITER ;
 
--- 13) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
+-- 16) 플레이리스트에 곡 추가 (display_order가 NULL이면 끝에 추가)
 DELIMITER //
 CREATE PROCEDURE sp_add_song_to_playlist(
 IN p_playlist_id BIGINT,
@@ -640,7 +840,7 @@ VALUES (p_playlist_id, p_song_id, p_display_order, NOW());
 END//
 DELIMITER ;
 
--- 14) 플레이리스트에서 곡 제거
+-- 17) 플레이리스트에서 곡 제거
 DELIMITER //
 CREATE PROCEDURE sp_remove_song_from_playlist(
 IN p_playlist_id BIGINT,
@@ -651,7 +851,7 @@ DELETE FROM playlist_Song WHERE playlist_id = p_playlist_id AND song_id = p_song
 END//
 DELIMITER ;
 
--- 15) 플레이리스트 내 곡 순서 변경 (안전하게 트랜잭션으로 처리)
+-- 18) 플레이리스트 내 곡 순서 변경 (안전하게 트랜잭션으로 처리)
 DELIMITER //
 
 CREATE PROCEDURE sp_change_playlist_order(
@@ -715,6 +915,95 @@ BEGIN
     COMMIT;
 END//
 DELIMITER ;
+
+-- 19) 인기차트 조회(주간/월간/연간)
+
+
+-- 20) 구독 상품 안내
+
+
+-- 21) 구독 신청
+
+
+-- 22) 구독 해제
+DELIMITER //
+CREATE PROCEDURE sp_update_subscription_renewal(
+    IN p_user_id BIGINT,
+    IN p_auto_renew_value BOOLEAN  -- TRUE=활성화, FALSE=해지, NULL=변경 없음
+)
+BEGIN
+    -- 예외 처리
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error updating subscription';
+    END;
+
+    START TRANSACTION;
+
+    -- 1. 기간 지난 구독 Expired 처리
+    UPDATE user_Subscription
+    SET status = 'Expired'
+    WHERE user_id = p_user_id
+      AND status = 'Active'
+      AND end_date < NOW();
+
+    -- 2. auto_renew 상태 변경 (NULL이면 무시)
+    IF p_auto_renew_value IS NOT NULL THEN
+        UPDATE user_Subscription
+        SET auto_renew = p_auto_renew_value
+        WHERE user_id = p_user_id
+          AND status = 'Active';
+    END IF;
+
+    COMMIT;
+
+    -- 3. 최신 구독 상태 반환
+    SELECT 
+        us_id, 
+        sub_id, 
+        start_date, 
+        end_date, 
+        status, 
+        auto_renew,
+        CASE 
+            WHEN status = 'Active' AND auto_renew = TRUE THEN '구독중 (자동결제 예정)'
+            WHEN status = 'Active' AND auto_renew = FALSE THEN '구독중 (해지 예약됨)'
+            ELSE '구독 만료'
+        END AS status_message
+    FROM user_Subscription
+    WHERE user_id = p_user_id
+    ORDER BY end_date DESC
+    LIMIT 1;
+
+END //
+DELIMITER ;
+
+-- 23)결제 내역 조회
+DELIMITER //
+
+CREATE PROCEDURE sp_user_subscription_history(
+    IN p_user_id BIGINT  -- 조회할 회원 ID
+)
+BEGIN
+    SELECT 
+        u.user_id,            -- 회원 ID
+        u.nickname,           -- 회원 닉네임
+        s.name AS subscription_name,  -- 구독 상품 이름
+        p.pay_method,         -- 결제 수단
+        p.amount,             -- 결제 금액
+        s.price,              -- 구독권 가격
+        p.paid_at,            -- 결제 완료 시각
+        p.is_success          -- 결제 성공 여부
+    FROM payments p
+    JOIN user_Subscription us ON p.us_id = us.us_id   -- 결제 ↔ 구독 연결
+    JOIN subscription s ON us.sub_id = s.sub_id      -- 구독권 정보
+    JOIN users u ON p.user_id = u.user_id           -- 회원 정보
+    WHERE u.user_id = p_user_id                     -- 특정 회원 필터
+    ORDER BY p.paid_at DESC;                        -- 최신 결제순으로 정렬
+END//
+
+DELIMITER  ; 
 ```
 
   </details>
@@ -772,10 +1061,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- 3. 곡 등록 (앨범 ID, 아티스트 ID, 장르ID 필요) 
--- 장르는 관리자가 추가
-장르등록) insert into genres (name) values ('R&B'), ('트로트'),('힙합');
-
+-- 3. 곡 등록 (앨범 ID, 아티스트 ID, 장르ID 필요) v2
 DELIMITER //
 CREATE PROCEDURE sp_create_song(
     IN p_album_id BIGINT,       -- 앨범 ID
@@ -827,6 +1113,9 @@ BEGIN
 END //
 
 DELIMITER ;
+
+-- 4. 장르등록
+insert into genres (name) values ('R&B'), ('트로트'),('힙합');
 ```
 
   </details>
